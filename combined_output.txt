@@ -1,0 +1,801 @@
+=== ИМЯ: ./go.sum ===
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/kelseyhightower/envconfig v1.4.0 h1:Im6hONhd3pLkfDFsbRgu68RDNkGF1r3dvMUtDTo2cv8=
+github.com/kelseyhightower/envconfig v1.4.0/go.mod h1:cccZRl6mQpaq41TPp5QxidR+Sa3axMbJDNb//FQX6Gg=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKsk=
+github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+go.uber.org/multierr v1.10.0 h1:S0h4aNzvfcFsC3dRF1jLoaov7oRaKqRGC/pUEJ2yvPQ=
+go.uber.org/multierr v1.10.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
+go.uber.org/zap v1.28.0 h1:IZzaP1Fv73/T/pBMLk4VutPl36uNC+OSUh3JLG3FIjo=
+go.uber.org/zap v1.28.0/go.mod h1:rDLpOi171uODNm/mxFcuYWxDsqWSAVkFdX4XojSKg/Q=
+go.yaml.in/yaml/v3 v3.0.4 h1:tfq32ie2Jv2UxXFdLJdh3jXuOzWiL1fo0bu/FbuKpbc=
+go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+
+=== ИМЯ: ./docker-compose.yaml ===
+services:
+  pg:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./out/pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pg-admin:
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.com
+      - PGADMIN_DEFAULT_PASSWORD=${POSTGRES_PASSWORD}
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_LISTEN_PORT=8080   # <- веб-порт
+    ports:
+      - "127.0.0.1:823:8080"       # <- хост:823 → контейнер:8080
+    restart: unless-stopped
+
+  pg-migrate:
+    image: migrate/migrate:v4.19.1
+    volumes:
+      - ./migration:/migrations
+
+  port-forwarder:
+    image: alpine/socat:1.8.0.3
+    command: tcp-listen:5432,fork,reuseaddr tcp-connect:pg:5432
+    ports:
+      - "127.0.0.1:5432:5432"
+
+
+=== ИМЯ: ./cmd/todoapp/main.go ===
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	core_http_middleware "github.com/glebateee/todoapp/internal/core/transport/http/middleware"
+	core_http_server "github.com/glebateee/todoapp/internal/core/transport/http/server"
+	users_transport_http "github.com/glebateee/todoapp/internal/features/users/transport/http"
+	"go.uber.org/zap"
+)
+
+func main() {
+	ctx, cancel := signal.NotifyContext(
+		context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	loggerConfig := core_logger.NewConfigMust()
+	logger, err := core_logger.NewLogger(loggerConfig)
+	if err != nil {
+		fmt.Println("failed to init application logger: ", err.Error())
+		os.Exit(1)
+	}
+	defer logger.Close()
+
+	logger.Debug("Starting todo application")
+	usersTransportHTTP := users_transport_http.NewUsersHTTPHandler(nil)
+	usersRoutes := usersTransportHTTP.Routes()
+
+	apiVersionRouter := core_http_server.NewApiVersionRouter(core_http_server.ApiVersion1)
+	apiVersionRouter.RegisterRoutes(usersRoutes...)
+
+	httpServer := core_http_server.NewHTTPServer(
+		core_http_server.NewConfigMust(),
+		logger,
+		core_http_middleware.RequestId(),
+		core_http_middleware.Logger(logger),
+		core_http_middleware.Panic(),
+		core_http_middleware.Trace(),
+	)
+
+	httpServer.RegisterApiRouters(*apiVersionRouter)
+	if err := httpServer.Run(ctx); err != nil {
+		logger.Error("HTTP server run error", zap.Error(err))
+	}
+}
+
+=== ИМЯ: ./internal/core/domain/user.go ===
+package domain
+
+type User struct {
+	ID      int
+	Version int
+
+	FullName    string
+	PhoneNumber *string
+}
+
+=== ИМЯ: ./internal/core/transport/http/middleware/middleware.go ===
+package core_http_middleware
+
+import "net/http"
+
+type Middleware func(http.Handler) http.Handler
+
+func ChainMiddleware(
+	h http.Handler,
+	m ...Middleware,
+) http.Handler {
+	if len(m) == 0 {
+		return h
+	}
+
+	for i := len(m) - 1; i >= 0; i-- {
+		h = m[i](h)
+	}
+	return h
+}
+
+=== ИМЯ: ./internal/core/transport/http/middleware/common.go ===
+package core_http_middleware
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	core_http_response "github.com/glebateee/todoapp/internal/core/transport/http/response"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+)
+
+const requestIDHeader = "X-Request-ID"
+
+func RequestId() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestId := r.Header.Get(requestIDHeader)
+			if requestId == "" {
+				requestId = uuid.NewString()
+				r.Header.Set(requestIDHeader, requestId)
+			}
+			w.Header().Set(requestIDHeader, requestId)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func Logger(logger *core_logger.Logger) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestId := r.Header.Get(requestIDHeader)
+			logger = logger.With(
+				zap.String("request_id", requestId),
+				zap.String("url", r.URL.String()),
+			)
+			ctx := context.WithValue(r.Context(), "logger", logger)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func Panic() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if arg := recover(); arg != nil {
+					logger := core_logger.FromContextMust(r.Context())
+					response_handler := core_http_response.NewHTTPResponseHandler(logger, w)
+					response_handler.PanicResponse(
+						arg,
+						"unexpected panic during handle HTTP request",
+					)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func Trace() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			logger := core_logger.FromContextMust(ctx)
+			codeWriter := core_http_response.NewWriter(w)
+			start := time.Now()
+			logger.Debug(">>> incoming HTTP request", zap.Time("time", start.UTC()))
+			next.ServeHTTP(codeWriter, r)
+
+			logger.Debug(
+				"<<< done HTTP request",
+				zap.Int("status_code", codeWriter.StatusCodeOrPanic()),
+				zap.Duration("latency", time.Since(start)),
+			)
+
+		})
+	}
+}
+
+=== ИМЯ: ./internal/core/transport/http/server/config.go ===
+package core_http_server
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/kelseyhightower/envconfig"
+)
+
+type Config struct {
+	Addr            string        `envconfig:"HTTP_ADDR"    required:"true"`
+	ShutdownTimeout time.Duration `envconfig:"HTTP_TIMEOUT" required:"true"`
+}
+
+func newConfig() (Config, error) {
+	var cfg Config
+	if err := envconfig.Process("HTTP", &cfg); err != nil {
+		return Config{}, fmt.Errorf("process config: %w", err)
+	}
+	return cfg, nil
+}
+
+func NewConfigMust() Config {
+	cfg, err := newConfig()
+	if err != nil {
+		err = fmt.Errorf("reading HTTP config: %w", err)
+		panic(err)
+	}
+	return cfg
+}
+
+=== ИМЯ: ./internal/core/transport/http/server/server.go ===
+package core_http_server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+
+	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	core_http_middleware "github.com/glebateee/todoapp/internal/core/transport/http/middleware"
+	"go.uber.org/zap"
+)
+
+type HTTPServer struct {
+	mux    *http.ServeMux
+	config Config
+	logger *core_logger.Logger
+
+	middleware []core_http_middleware.Middleware
+}
+
+func NewHTTPServer(
+	cfg Config,
+	logger *core_logger.Logger,
+	middleware ...core_http_middleware.Middleware,
+) HTTPServer {
+	return HTTPServer{
+		mux:        http.NewServeMux(),
+		config:     cfg,
+		logger:     logger,
+		middleware: middleware,
+	}
+}
+
+func (h *HTTPServer) RegisterApiRouters(routers ...ApiVersionRouter) {
+	for _, router := range routers {
+		prefix := "/api/" + string(router.apiVersion)
+		h.mux.Handle(prefix+"/", http.StripPrefix(prefix, router))
+	}
+}
+
+func (hs *HTTPServer) Run(ctx context.Context) error {
+	mux := core_http_middleware.ChainMiddleware(hs.mux, hs.middleware...)
+	server := http.Server{
+		Addr:    hs.config.Addr,
+		Handler: mux,
+	}
+
+	ch := make(chan error, 1)
+
+	go func() {
+		defer close(ch)
+		hs.logger.Warn("start HTTP server", zap.String("addr", hs.config.Addr))
+		err := server.ListenAndServe()
+		if !errors.Is(err, http.ErrServerClosed) {
+			ch <- err
+		}
+	}()
+
+	select {
+	case err := <-ch:
+		if err != nil {
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+	case <-ctx.Done():
+		hs.logger.Warn("shutdown HTTP server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), hs.config.ShutdownTimeout)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("shutdown HTTP server: %w", err)
+		}
+		hs.logger.Warn("HTTP server stopped")
+	}
+	return nil
+}
+
+=== ИМЯ: ./internal/core/transport/http/server/router.go ===
+package core_http_server
+
+import (
+	"fmt"
+	"net/http"
+)
+
+type ApiVersion string
+
+var (
+	ApiVersion1 = ApiVersion("1")
+	ApiVersion2 = ApiVersion("2")
+	ApiVersion3 = ApiVersion("3")
+)
+
+type ApiVersionRouter struct {
+	*http.ServeMux
+	apiVersion ApiVersion
+}
+
+func NewApiVersionRouter(
+	apiVersion ApiVersion,
+) *ApiVersionRouter {
+	return &ApiVersionRouter{
+		ServeMux:   http.NewServeMux(),
+		apiVersion: apiVersion,
+	}
+}
+
+func (r *ApiVersionRouter) RegisterRoutes(routes ...Route) {
+	for _, route := range routes {
+		pattern := fmt.Sprintf("%s %s", route.Method, route.Path)
+		r.Handle(pattern, route.Handler)
+	}
+}
+
+=== ИМЯ: ./internal/core/transport/http/server/route.go ===
+package core_http_server
+
+import "net/http"
+
+type Route struct {
+	Method  string
+	Path    string
+	Handler http.HandlerFunc
+}
+
+func NewRoute(
+	method string,
+	path string,
+	handler http.HandlerFunc,
+) Route {
+	return Route{
+		Method:  method,
+		Path:    path,
+		Handler: handler,
+	}
+}
+
+=== ИМЯ: ./internal/core/transport/http/response/writer.go ===
+package core_http_response
+
+import "net/http"
+
+var statusCodeUninitialized = -1
+
+type Writer struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func NewWriter(w http.ResponseWriter) *Writer {
+	return &Writer{
+		ResponseWriter: w,
+		statusCode:     statusCodeUninitialized,
+	}
+}
+
+func (rw *Writer) WriteHeader(statusCode int) {
+	rw.WriteHeader(statusCode)
+	rw.statusCode = statusCode
+}
+
+func (rw *Writer) StatusCodeOrPanic() int {
+	if rw.statusCode == statusCodeUninitialized {
+		panic("no status code set")
+	}
+	return rw.statusCode
+}
+
+=== ИМЯ: ./internal/core/transport/http/response/handler.go ===
+package core_http_response
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	"go.uber.org/zap"
+)
+
+type HTTPResponseHandler struct {
+	log *core_logger.Logger
+	w   http.ResponseWriter
+}
+
+func NewHTTPResponseHandler(
+	logger *core_logger.Logger,
+	w http.ResponseWriter,
+) *HTTPResponseHandler {
+	return &HTTPResponseHandler{
+		log: logger,
+	}
+}
+func (h *HTTPResponseHandler) PanicResponse(p any, msg string) {
+	statusCode := http.StatusInternalServerError
+	err := fmt.Errorf("unexpected panic: %v", p)
+
+	h.log.Error(msg, zap.Error(err))
+	h.w.WriteHeader(statusCode)
+
+	response := map[string]string{
+		"message": msg,
+		"error":   err.Error(),
+	}
+
+	if err := json.NewEncoder(h.w).Encode(response); err != nil {
+		h.log.Error("write HTTP response", zap.Error(err))
+	}
+}
+
+=== ИМЯ: ./internal/core/logger/config.go ===
+package core_logger
+
+import (
+	"fmt"
+
+	"github.com/kelseyhightower/envconfig"
+)
+
+type Config struct {
+	Level  string `envconfig:"LEVEL"  required:"true"`
+	Folder string `envconfig:"FOLDER" required:"true"`
+}
+
+func NewConfig() (Config, error) {
+	var cfg Config
+	if err := envconfig.Process("LOGGER", &cfg); err != nil {
+		return Config{}, fmt.Errorf("process envconfig: %w", err)
+	}
+	return cfg, nil
+}
+
+func NewConfigMust() Config {
+	cfg, err := NewConfig()
+	if err != nil {
+		err = fmt.Errorf("get Logger config: %w", err)
+		panic(err)
+	}
+	return cfg
+}
+
+=== ИМЯ: ./internal/core/logger/logger.go ===
+package core_logger
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+type Logger struct {
+	*zap.Logger
+	file *os.File
+}
+
+func NewLogger(cfg Config) (*Logger, error) {
+	zapLvl := zap.NewAtomicLevel()
+	if err := zapLvl.UnmarshalText([]byte(cfg.Level)); err != nil {
+		return nil, fmt.Errorf("unmarshal log level: %w", err)
+	}
+	if err := os.MkdirAll(cfg.Folder, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir log folder: %w", err)
+	}
+	timestamp := time.Now().Format("2006-01-02T15-04-05.000000")
+	logFilePath := filepath.Join(
+		cfg.Folder,
+		fmt.Sprintf("%s.log", timestamp),
+	)
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("ope log file: %w", err)
+	}
+
+	zapConfig := zap.NewDevelopmentEncoderConfig()
+	zapConfig.EncodeTime = zapcore.TimeEncoderOfLayout("2006-01-02T15:04:05.000000")
+	zapEncoder := zapcore.NewConsoleEncoder(zapConfig)
+	core := zapcore.NewTee(
+		zapcore.NewCore(zapEncoder, zapcore.AddSync(os.Stdout), zapLvl),
+		zapcore.NewCore(zapEncoder, zapcore.AddSync(logFile), zapLvl),
+	)
+	zapLogger := zap.New(core, zap.AddCaller())
+	return &Logger{
+		Logger: zapLogger,
+		file:   logFile,
+	}, nil
+}
+
+func (l *Logger) Close() {
+	if err := l.file.Close(); err != nil {
+		fmt.Println("failed to close logger: ", err.Error())
+	}
+}
+
+func (l *Logger) With(fields ...zap.Field) *Logger {
+	return &Logger{
+		Logger: l.Logger.With(fields...),
+		file:   l.file,
+	}
+}
+
+func FromContextMust(ctx context.Context) *Logger {
+	log, ok := ctx.Value("logger").(*Logger)
+	if !ok {
+		panic("logger not found in context")
+	}
+	return log
+}
+
+=== ИМЯ: ./internal/features/users/transport/http/transport.go ===
+package users_transport_http
+
+import (
+	"encoding/json"
+	"net/http"
+
+	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	core_http_server "github.com/glebateee/todoapp/internal/core/transport/http/server"
+)
+
+type UsersHttpHandler struct {
+	usersService usersService
+}
+
+type usersService interface{}
+
+func NewUsersHTTPHandler(
+	usersService usersService,
+) *UsersHttpHandler {
+	return &UsersHttpHandler{
+		usersService: usersService,
+	}
+}
+
+func (h *UsersHttpHandler) Routes() []core_http_server.Route {
+	return []core_http_server.Route{
+		{
+			Method:  http.MethodPost,
+			Path:    "/users",
+			Handler: h.CreateUser,
+		},
+	}
+}
+
+func (h *UsersHttpHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+	log := core_logger.FromContextMust(ctx)
+	log.Debug("CreateUser handler invoked")
+	var request CreateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+=== ИМЯ: ./internal/features/users/transport/http/create_user.go ===
+package users_transport_http
+
+type CreateUserRequest struct {
+	FullName    string  `json:"full_name"`
+	PhoneNumber *string `json:"phone_number"`
+}
+
+type CreateUserResponse struct {
+	ID          int     `json:"id"`
+	Version     int     `json:"version"`
+	FullName    string  `json:"full_name"`
+	PhoneNumber *string `json:"phone_number"`
+}
+
+=== ИМЯ: ./Makefile ===
+# Загрузка переменных из .env
+ifneq (,$(wildcard .env))
+    include .env
+    export
+endif
+
+env-up:
+	@sudo docker compose up -d pg
+
+env-down:
+	@sudo docker compose down -v
+
+env-cleanup:
+	@read -p "Do you really wanna delete all files? [y/N]: " ans; \
+	case "$$ans" in \
+		y|Y|yes|YES) \
+			sudo docker compose down -v && \
+			sudo rm -rv out/pgdata && \
+			echo "All done!" ;; \
+		*) \
+			echo "Cleanup cancelled" ;; \
+	esac
+
+migrate-create:
+	@if [ -z "$(seq)" ]; then \
+		echo "Missing parameter seq, usage: make migrate-create seq=init"; \
+		exit 1; \
+	fi; \
+	sudo docker compose run --rm pg-migrate \
+		create \
+		-ext sql \
+		-dir /migrations \
+		-seq "$(seq)" 
+
+migrate-up:
+	@make migrate-action action=up
+
+migrate-down:
+	@make migrate-action action=down
+
+migrate-action:
+	@if [ -z "$(action)" ]; then \
+		echo "Missing action parameter, usage: make migrate-action action=up"; \
+		exit 1; \
+	fi; \
+	sudo docker compose run --rm pg-migrate \
+		-path /migrations \
+		-database "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@pg:5432/$(POSTGRES_DB)?sslmode=disable" \
+		$(action)
+
+env-port-forward:
+	@sudo docker compose up -d port-forwarder
+
+env-port-close:
+	@sudo docker compose down port-forwarder
+
+
+env-logs:
+	@sudo docker compose logs -f pg
+
+env-shell:
+	@sudo docker exec -it todoapp-pg-1 psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+
+todoapp-run:
+	@ export LOGGER_FOLDER=./out/logs && 	go mod tidy && 	go run cmd/todoapp/main.go
+=== ИМЯ: ./.gitignore ===
+out
+.env
+=== ИМЯ: ./.env.example ===
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_DB=
+=== ИМЯ: ./.env ===
+HTTP_ADDR=:5050
+HTTP_TIMEOUT=30s
+
+POSTGRES_USER=test
+POSTGRES_PASSWORD=test123
+POSTGRES_DB=testdb
+
+LOGGER_LEVEL=DEBUG
+=== ИМЯ: ./go.mod ===
+module github.com/glebateee/todoapp
+
+go 1.26.2
+
+require (
+	github.com/google/uuid v1.6.0
+	github.com/kelseyhightower/envconfig v1.4.0
+	go.uber.org/zap v1.28.0
+)
+
+require go.uber.org/multierr v1.10.0 // indirect
+
+=== ИМЯ: ./migration/000001_init.down.sql ===
+DROP TABLE todoapp.tasks;
+
+DROP TABLE todoapp.users;
+
+DROP SCHEMA todoapp;
+
+=== ИМЯ: ./migration/000001_init.up.sql ===
+CREATE SCHEMA todoapp;
+
+CREATE TABLE todoapp.users(
+    id              SERIAL                      PRIMARY KEY,
+    version         BIGINT          NOT NULL    DEFAULT 1,
+    full_name       VARCHAR(100)    NOT NULL    CHECK(char_length(full_name) BETWEEN 3 AND 100),
+    phone_number    VARCHAR(15)                 CHECK(
+        char_length(phone_number) BETWEEN 10 AND 15
+        AND
+        phone_number ~ '^\+[0-9]+$'
+    )
+); 
+
+CREATE TABLE todoapp.tasks(
+    id              SERIAL                      PRIMARY KEY,
+    version         BIGINT          NOT NULL    DEFAULT 1,
+    title           VARCHAR(100)    NOT NULL    CHECK(char_length(title) BETWEEN 1 AND 100),
+    description     VARCHAR(1000)               CHECK(char_length(title) BETWEEN 1 AND 100),
+    completed       BOOLEAN         NOT NULL    DEFAULT FALSE,
+    created_at      TIMESTAMPTZ     NOT NULL,
+    completed_at    TIMESTAMPTZ,
+
+    CHECK(
+        (completed = FALSE AND completed_at IS NULL)
+        OR
+        (completed = TRUE AND completed_at IS NOT NULL AND completed_at >= created_at)
+    ),
+
+    author_user_id  INTEGER         NOT NULL    REFERENCES  todoapp.users(id)
+);
+
+=== ИМЯ: ./p.sh ===
+#!/bin/bash
+
+# Скрипт рекурсивного обхода файлов (исключая директории out и .git)
+# Сохраняет названия и содержимое в выходной файл.
+# Использование: ./script.sh [выходной_файл]
+# По умолчанию выходной файл: combined_output.txt
+
+OUTPUT_FILE="${1:-combined_output.txt}"
+
+# Создаём выходной файл и получаем его абсолютный путь (чтобы надёжно исключить его)
+touch "$OUTPUT_FILE" 2>/dev/null || { echo "Ошибка: не могу создать $OUTPUT_FILE" >&2; exit 1; }
+OUTPUT_ABS=$(realpath "$OUTPUT_FILE")
+> "$OUTPUT_FILE"  # Очищаем содержимое
+
+# Поиск всех файлов, исключая:
+# - директории с именем out (prune)
+# - директории с именем .git (prune)
+# - сам выходной файл (сравнение абсолютных путей)
+find . \( -type d -name out -prune \) -o \
+       \( -type d -name .git -prune \) -o \
+       -type f -print0 | while IFS= read -r -d '' file; do
+    FILE_ABS=$(realpath "$file")
+    # Пропускаем выходной файл, если он случайно попал в обход
+    [[ "$FILE_ABS" == "$OUTPUT_ABS" ]] && continue
+
+    echo "=== ИМЯ: $file ===" >> "$OUTPUT_FILE"
+    if ! cat "$file" >> "$OUTPUT_FILE" 2>/dev/null; then
+        echo "Ошибка: не удалось прочитать $file" >> "$OUTPUT_FILE"
+    fi
+    echo "" >> "$OUTPUT_FILE"   # Разделитель между файлами
+done
+
+echo "Готово. Результат сохранён в $OUTPUT_FILE"

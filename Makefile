@@ -60,3 +60,6 @@ env-logs:
 
 env-shell:
 	@sudo docker exec -it todoapp-pg-1 psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
+
+todoapp-run:
+	@ export LOGGER_FOLDER=./out/logs &&  export POSTGRES_HOST=localhost && go mod tidy && 	go run cmd/todoapp/main.go
