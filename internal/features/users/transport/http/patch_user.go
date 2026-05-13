@@ -9,7 +9,6 @@ import (
 	core_http_request "github.com/glebateee/todoapp/internal/core/transport/http/request"
 	core_http_response "github.com/glebateee/todoapp/internal/core/transport/http/response"
 	core_http_types "github.com/glebateee/todoapp/internal/core/transport/http/types"
-	core_http_utils "github.com/glebateee/todoapp/internal/core/transport/http/utils"
 )
 
 type PatchUserRequest struct {
@@ -49,7 +48,7 @@ func (h *UsersHTTPHandler) PatchUser(w http.ResponseWriter, r *http.Request) {
 	logger := core_logger.FromContextMust(ctx)
 	responseHandler := core_http_response.NewHTTPResponseHandler(logger, w)
 
-	userId, err := core_http_utils.GetIntPathValue(r, "id")
+	userId, err := core_http_request.GetIntPathValue(r, "id")
 	if err != nil {
 		responseHandler.ErrorResponse(err, "failed to get userId path value")
 		return
@@ -77,8 +76,8 @@ func (h *UsersHTTPHandler) PatchUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func userPatchFromRequest(request PatchUserRequest) domain.UserPatch {
-	return domain.UserPatch{
-		FullName:    request.FullName.ToDomain(),
-		PhoneNumber: request.PhoneNumber.ToDomain(),
-	}
+	return domain.NewUserPatch(
+		request.FullName.ToDomain(),
+		request.PhoneNumber.ToDomain(),
+	)
 }
