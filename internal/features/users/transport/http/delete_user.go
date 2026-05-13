@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	core_logger "github.com/glebateee/todoapp/internal/core/logger"
+	core_http_request "github.com/glebateee/todoapp/internal/core/transport/http/request"
 	core_http_response "github.com/glebateee/todoapp/internal/core/transport/http/response"
-	core_http_utils "github.com/glebateee/todoapp/internal/core/transport/http/utils"
 )
 
 // DELETE /users/{id}
@@ -15,7 +15,7 @@ func (h *UsersHTTPHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	logger := core_logger.FromContextMust(ctx)
 	responseHandler := core_http_response.NewHTTPResponseHandler(logger, w)
 
-	userId, err := core_http_utils.GetIntPathValue(r, "id")
+	userId, err := core_http_request.GetIntPathValue(r, "id")
 	if err != nil {
 		responseHandler.ErrorResponse(err, "failed to get userId path value")
 		return
