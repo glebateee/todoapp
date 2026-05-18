@@ -2,6 +2,7 @@ package statistics_transport_http
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/glebateee/todoapp/internal/core/domain"
@@ -30,5 +31,11 @@ func NewStatisticsHTTPHandler(
 }
 
 func (h *StatisticsHTTPHandler) Route() []core_http_server.Route {
-	return []core_http_server.Route{}
+	return []core_http_server.Route{
+		{
+			Method:  http.MethodGet,
+			Path:    "/statistics",
+			Handler: h.GetStatistics,
+		},
+	}
 }

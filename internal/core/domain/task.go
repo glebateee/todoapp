@@ -151,3 +151,11 @@ func (t *Task) ApplyPatch(patch TaskPatch) error {
 	*t = tmp
 	return nil
 }
+
+func (t *Task) CompletionDuration() *time.Duration {
+	if !t.Completed || t.CompletedAt == nil {
+		return nil
+	}
+	d := t.CompletedAt.Sub(t.CreatedAt)
+	return &d
+}
