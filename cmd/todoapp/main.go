@@ -8,10 +8,15 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/glebateee/todoapp/docs"
+	core_config "github.com/glebateee/todoapp/internal/core/config"
 	core_logger "github.com/glebateee/todoapp/internal/core/logger"
 	core_pgx_pool "github.com/glebateee/todoapp/internal/core/repository/postgres/pool/pgx"
 	core_http_middleware "github.com/glebateee/todoapp/internal/core/transport/http/middleware"
 	core_http_server "github.com/glebateee/todoapp/internal/core/transport/http/server"
+	statistics_postgres_repository "github.com/glebateee/todoapp/internal/features/statistics/repository/postgres"
+	statistics_service "github.com/glebateee/todoapp/internal/features/statistics/service"
+	statistics_transport_http "github.com/glebateee/todoapp/internal/features/statistics/transport/http"
 	tasks_postgres_repository "github.com/glebateee/todoapp/internal/features/tasks/repository/postgres"
 	tasks_service "github.com/glebateee/todoapp/internal/features/tasks/service"
 	tasks_transport_http "github.com/glebateee/todoapp/internal/features/tasks/transport/http"
@@ -21,12 +26,15 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	timeZone = time.UTC
-)
+// @title           ToDo App API
+// @version         1.0
+// @description     ToDO Application REST-API scheme
+// @host            localhost:2048
+// @BasePath        /api/1
 
 func main() {
-	time.Local = timeZone
+	cfg := core_config.NewConfigMust()
+	time.Local = cfg.TimeZone
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
@@ -37,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Close()
-	logger.Debug("application time zone", zap.Any("zone", timeZone))
+	logger.Debug("application time zone", zap.Any("zone", time.Local))
 
 	logger.Debug("initializing postgres connection pool")
 	pool, err := core_pgx_pool.NewPool(
@@ -61,11 +69,17 @@ func main() {
 	tasksService := tasks_service.NewTaskService(tasksRepository)
 	tasksTransportHTTP := tasks_transport_http.NewTasksHTTPHandler(tasksService)
 
+	logger.Debug("initializing feature", zap.String("feature", "statistics"))
+	statisticsRepository := statistics_postgres_repository.NewStatisticsRepository(pool)
+	statisticsService := statistics_service.NewStatisticsService(statisticsRepository)
+	statisticsTransportHTTP := statistics_transport_http.NewStatisticsHTTPHandler(statisticsService)
+
 	logger.Debug("initializing HTTP server")
 
 	httpServer := core_http_server.NewHTTPServer(
 		core_http_server.NewConfigMust(),
 		logger,
+		core_http_middleware.CORS(),
 		core_http_middleware.RequestId(),
 		core_http_middleware.Logger(logger),
 		core_http_middleware.Trace(),
@@ -75,9 +89,10 @@ func main() {
 	apiVersionRouterV1 := core_http_server.NewApiVersionRouter(core_http_server.ApiVersion1)
 	apiVersionRouterV1.RegisterRoutes(usersTransportHTTP.Routes()...)
 	apiVersionRouterV1.RegisterRoutes(tasksTransportHTTP.Routes()...)
+	apiVersionRouterV1.RegisterRoutes(statisticsTransportHTTP.Route()...)
 
 	httpServer.RegisterApiRouters(apiVersionRouterV1)
-
+	httpServer.RegisterSwagger()
 	// apiVersionRouterV2 := core_http_server.NewApiVersionRouter(
 	// 	core_http_server.ApiVersion2,
 	// 	core_http_middleware.Dummy("api v2 middleware"),

@@ -1,0 +1,71 @@
+package tasks_postgres_repository
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/glebateee/todoapp/internal/core/domain"
+)
+
+func (r *TasksRepository) GetTasks(
+	ctx context.Context,
+	userId *int,
+	limit *int,
+	offset *int,
+) ([]domain.Task, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.OpTimeout())
+	defer cancel()
+
+	query := `SELECT 
+				id,
+	 			version, 
+	 			title,
+	  			description,
+	   			completed,
+	    		created_at,
+		 		completed_at,
+		  		author_user_id
+			  FROM todoapp.tasks
+			  %s
+			  ORDER BY id
+			  LIMIT $1
+			  OFFSET $2;`
+
+	var toInsert string
+	args := []any{limit, offset}
+	if userId != nil {
+		toInsert = "WHERE author_user_id = $3"
+		args = append(args, userId)
+	}
+	query = fmt.Sprintf(query, toInsert)
+	rows, err := r.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("select tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var taskModels []TaskModel
+	for rows.Next() {
+		var taskModel TaskModel
+		err := rows.Scan(
+			&taskModel.ID,
+			&taskModel.Version,
+			&taskModel.Title,
+			&taskModel.Description,
+			&taskModel.Completed,
+			&taskModel.CreatedAt,
+			&taskModel.CompletedAt,
+			&taskModel.AuthorUserID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan tasks: %w", err)
+		}
+		taskModels = append(taskModels, taskModel)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("next rows: %w", err)
+	}
+	taskDomains := taskDomainsFromModels(taskModels)
+	return taskDomains, nil
+}
