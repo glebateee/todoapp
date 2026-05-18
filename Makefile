@@ -54,6 +54,15 @@ env-port-forward:
 env-port-close:
 	@sudo docker compose down port-forwarder
 
+logs-cleanup:
+	@read -p "Do you really wanna delete all log files? [y/N]: " ans; \
+	case "$$ans" in \
+		y|Y|yes|YES) \
+			sudo rm -rv out/logs && \
+			echo "All done!" ;; \
+		*) \
+			echo "Cleanup cancelled" ;; \
+	esac
 
 env-logs:
 	@sudo docker compose logs -f pg
@@ -63,3 +72,11 @@ env-shell:
 
 todoapp-run:
 	@ export LOGGER_FOLDER=./out/logs &&  export POSTGRES_HOST=localhost && go mod tidy && 	go run cmd/todoapp/main.go
+
+swagger-gen:
+	@docker compose run --rm --remove-orphans swagger \
+		init \
+		-g cmd/todoapp/main.go \
+		-o docs \
+		--parseInternal \
+		--parseDependency

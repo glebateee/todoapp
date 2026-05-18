@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/glebateee/todoapp/docs"
+	core_config "github.com/glebateee/todoapp/internal/core/config"
 	core_logger "github.com/glebateee/todoapp/internal/core/logger"
 	core_pgx_pool "github.com/glebateee/todoapp/internal/core/repository/postgres/pool/pgx"
 	core_http_middleware "github.com/glebateee/todoapp/internal/core/transport/http/middleware"
@@ -21,12 +23,15 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	timeZone = time.UTC
-)
+// @title           ToDo App API
+// @version         1.0
+// @description     ToDO Application REST-API scheme
+// @host            localhost:2048
+// @BasePath        /api/1
 
 func main() {
-	time.Local = timeZone
+	cfg := core_config.NewConfigMust()
+	time.Local = cfg.TimeZone
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
@@ -37,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Close()
-	logger.Debug("application time zone", zap.Any("zone", timeZone))
+	logger.Debug("application time zone", zap.Any("zone", time.Local))
 
 	logger.Debug("initializing postgres connection pool")
 	pool, err := core_pgx_pool.NewPool(
@@ -66,6 +71,7 @@ func main() {
 	httpServer := core_http_server.NewHTTPServer(
 		core_http_server.NewConfigMust(),
 		logger,
+		core_http_middleware.CORS(),
 		core_http_middleware.RequestId(),
 		core_http_middleware.Logger(logger),
 		core_http_middleware.Trace(),
@@ -77,7 +83,7 @@ func main() {
 	apiVersionRouterV1.RegisterRoutes(tasksTransportHTTP.Routes()...)
 
 	httpServer.RegisterApiRouters(apiVersionRouterV1)
-
+	httpServer.RegisterSwagger()
 	// apiVersionRouterV2 := core_http_server.NewApiVersionRouter(
 	// 	core_http_server.ApiVersion2,
 	// 	core_http_middleware.Dummy("api v2 middleware"),
